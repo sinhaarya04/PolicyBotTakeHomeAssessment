@@ -1,0 +1,68 @@
+# MEDICAL CODE INFERENCE PIPELINE - DEPENDENCIES
+# This file lists all the Python packages needed to run the medical code inference pipeline
+
+# =============================================================================
+# CORE DEPENDENCIES (Required for basic functionality)
+# =============================================================================
+
+pandas>=1.5.0              # For reading and processing CSV files
+numpy>=1.21.0              # For mathematical operations and arrays
+scikit-learn>=1.1.0        # For machine learning algorithms and similarity calculations
+
+# =============================================================================
+# AI/ML DEPENDENCIES (Required for the smart BERT pipeline)
+# =============================================================================
+
+transformers>=4.20.0       # For using pre-trained AI models (ClinicalBERT)
+torch>=1.12.0              # AI framework that powers the neural networks
+tokenizers>=0.12.0         # For processing text for AI models
+
+# =============================================================================
+# OPTIONAL PERFORMANCE IMPROVEMENTS (Uncomment if you want faster processing)
+# =============================================================================
+
+# accelerate>=0.20.0       # Makes AI models run faster
+# datasets>=2.0.0          # For handling very large datasets efficiently
+
+# =============================================================================
+# TEXT PROCESSING (For advanced text analysis)
+# =============================================================================
+
+nltk>=3.7                  # Natural Language Toolkit for text processing
+spacy>=3.4.0               # Advanced text processing and named entity recognition
+
+# =============================================================================
+# UTILITIES (For progress bars and visualization)
+# =============================================================================
+
+tqdm>=4.64.0               # Shows progress bars during processing
+matplotlib>=3.5.0          # For creating charts and graphs
+seaborn>=0.11.0            # For making pretty statistical plots
+
+# =============================================================================
+# DEVELOPMENT DEPENDENCIES (Only needed if you're modifying the code)
+# =============================================================================
+
+# pytest>=7.0.0            # For running tests
+# black>=22.0.0            # For automatically formatting code
+# flake8>=4.0.0            # For checking code quality
+
+# =============================================================================
+# INSTALLATION INSTRUCTIONS
+# =============================================================================
+# 
+# To install all required packages, run:
+# pip install -r requirements.txt
+#
+# To install only the basic packages (for the fast pipeline), run:
+# pip install pandas numpy scikit-learn tqdm
+#
+# To install everything including AI packages (for the smart pipeline), run:
+# pip install -r requirements.txt
+#
+# If you get errors, try installing packages one by one:
+# pip install pandas
+# pip install numpy
+# pip install scikit-learn
+# pip install transformers
+# pip install torch
