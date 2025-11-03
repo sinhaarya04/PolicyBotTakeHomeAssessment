@@ -1,44 +1,28 @@
-#!/usr/bin/env python3
 """
-MEDICAL CODE INFERENCE PIPELINE - HIGH ACCURACY VERSION
+MEDICAL CODE INFERENCE PIPELINE WITH HUMAN REVIEW FLAGGING
 
-This is the "smart" version that uses AI to find medical codes.
-It's slower but very accurate (99% success rate).
+Key Features:
+- Extracting using ClinicalBERT for high accuracy
+- Flagging documents with low ICD-10 confidence for human reviewer
+- Providing better confidence scores
+- Enabling human reviewers to step in and label codes
 
-WHAT THIS DOES:
-- Reads medical policy documents
-- Uses AI (ClinicalBERT) to understand medical language
-- Finds medical billing codes automatically
-- Gives confidence scores for each code found
-
-HOW IT WORKS:
-1. Loads the AI model (ClinicalBERT - trained on medical text)
-2. Reads all medical codes from databases
-3. For each policy document:
-   - Converts text to numbers (embeddings)
-   - Compares with all medical code descriptions
-   - Finds the best matches
-   - Calculates confidence scores
-4. Saves results to CSV file
-
-PERFORMANCE:
-- Accuracy: 99% (finds codes in 198 out of 200 documents)
-- Speed: ~47 minutes for 200 documents
-- Best for: Production use when accuracy matters most
+Review Logic:
+- Flag ICD-10 codes with confidence < 0.6
+- Flag when no ICD-10 codes found
+- Flag if average confidence below moderate threshold
+- Human reviewer can verify or label codes
 """
+import pandas as pd
+import re
+import logging
+import numpy as np
+from typing import List, Tuple, Dict, Optional
+import argparse
+import sys
+import os
+from tqdm import tqdm
 
-# Import all the libraries we need
-import pandas as pd          # For reading CSV files
-import re                   # For finding patterns in text
-import logging              # For showing progress messages
-import numpy as np          # For doing math with numbers
-from typing import List, Tuple, Dict  # For type hints (helps catch errors)
-import argparse             # For reading command line arguments
-import sys                  # For system operations
-import os                   # For file operations
-from tqdm import tqdm       # For showing progress bars
-
-# Set up logging - this shows us what's happening as the program runs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -60,39 +44,18 @@ class EfficientBERTEncoder:
     
     This class uses ClinicalBERT (a medical AI model) to understand medical text.
     Think of it as a medical expert that can read and understand complex medical language.
-    
-    WHAT IT DOES:
-    - Loads the ClinicalBERT AI model (trained on medical text)
-    - Converts medical text into numbers (embeddings) that represent meaning
-    - Allows us to compare text similarity even when words are different
-    
-    HOW IT WORKS:
-    1. Loads the pre-trained AI model
-    2. Converts text to tokens (small pieces of text)
-    3. Runs through the neural network to get embeddings
-    4. Returns numbers that represent the meaning of the text
-    
-    WHY WE NEED THIS:
-    - Medical text is complex and uses specialized terminology
-    - We need to understand meaning, not just match exact words
-    - ClinicalBERT was trained specifically on medical text, so it's very good at this
     """
     
     def __init__(self, model_name: str = "emilyalsentzer/Bio_ClinicalBERT"):
-        """
-        INITIALIZE THE AI ENCODER
+        """Initialize the AI encoder."""
+        self.model_name = model_name
+        self.tokenizer = None
+        self.model = None
+        self.device = None
+        self.available = False
         
-        INPUT: model_name - which AI model to use (we use ClinicalBERT)
-        """
-        self.model_name = model_name    # The name of the AI model we're using
-        self.tokenizer = None           # Converts text to tokens for the AI
-        self.model = None               # The actual AI neural network
-        self.device = None              # Whether to use CPU or GPU
-        self.available = False          # Whether the AI model is working
-        
-        # Try to load the AI model
         if TRANSFORMERS_AVAILABLE:
-            self._initialize_bert()     # Load the AI model
+            self._initialize_bert()
         else:
             logger.warning("AI library not available - using simple rules instead")
     
@@ -117,7 +80,7 @@ class EfficientBERTEncoder:
     
     def encode_text(self, text: str) -> np.ndarray:
         """Encode text using ClinicalBERT."""
-        if not self.available or not text or not text.strip():
+        if not self.available or not text or not str(text).strip():
             return np.zeros(768)  # Return zero vector as fallback
         
         try:
@@ -146,9 +109,18 @@ class EfficientBERTEncoder:
 class EfficientCodeInference:
     """Efficient medical code inference with ClinicalBERT."""
     
-    def __init__(self):
+    def __init__(self, review_threshold: float = 0.6):
+        """
+        Initialize the inference engine.
+        
+        Args:
+            review_threshold: Minimum average confidence to avoid human review (default: 0.6)
+        """
         # Initialize BERT encoder
         self.bert_encoder = EfficientBERTEncoder()
+        
+        # Review threshold for flagging documents
+        self.review_threshold = review_threshold
         
         # Load medical codes
         self.hcpcs_codes = self._load_hcpcs_codes()
@@ -461,10 +433,117 @@ class EfficientCodeInference:
         confidence_scores = [conf for _, conf in hcpcs_filtered + icd10_filtered]
         
         return hcpcs_codes, icd10_codes, confidence_scores
+    
+    def _should_flag_review(self, icd10_codes: List[str], icd10_confidences: List[float]) -> Tuple[bool, str]:
+        """
+        Determine if document should be flagged for human review.
+        
+        Review logic:
+        - Flag when no ICD-10 codes found
+        - Flag when average ICD-10 confidence < review_threshold (default 0.6)
+        - Flag when all ICD-10 codes have confidence < 0.5
+        
+        Args:
+            icd10_codes: List of ICD-10 codes found
+            icd10_confidences: List of confidence scores for ICD-10 codes
+            
+        Returns:
+            Tuple of (should_flag: bool, reason: str)
+        """
+        # Flag if no ICD-10 codes found
+        if len(icd10_codes) == 0:
+            return True, "No ICD-10 codes found - may need review"
+        
+        # Calculate average confidence
+        avg_icd10_confidence = sum(icd10_confidences) / len(icd10_confidences) if icd10_confidences else 0.0
+        
+        # Flag if average confidence below threshold
+        if avg_icd10_confidence < self.review_threshold:
+            return True, f"Low average confidence ({avg_icd10_confidence:.2f} < {self.review_threshold})"
+        
+        # Flag if all codes have very low confidence
+        if all(conf < 0.5 for conf in icd10_confidences):
+            return True, f"All ICD-10 codes have confidence < 0.5"
+        
+        return False, ""
+    
+    def infer_codes_with_review(self, text: str) -> Dict:
+        """
+        Infer codes and determine if human review is needed.
+        
+        Args:
+            text: Policy text to analyze
+            
+        Returns:
+            Dictionary with:
+            - hcpcs_codes: List of HCPCS codes
+            - icd10_codes: List of ICD-10 codes
+            - hcpcs_confidences: List of HCPCS confidence scores
+            - icd10_confidences: List of ICD-10 confidence scores
+            - needs_review: Boolean indicating if review is needed
+            - review_reason: Reason for review flagging (if applicable)
+        """
+        if not text or pd.isna(text) or not str(text).strip():
+            return {
+                'hcpcs_codes': [],
+                'icd10_codes': [],
+                'hcpcs_confidences': [],
+                'icd10_confidences': [],
+                'needs_review': True,
+                'review_reason': "Empty or invalid text"
+            }
+        
+        # Extract codes with confidence scores from both methods
+        rule_hcpcs, rule_icd10 = self._extract_with_rules(text)
+        semantic_hcpcs, semantic_icd10 = self._extract_with_semantics(text)
+        
+        # Combine and deduplicate HCPCS codes with confidences
+        hcpcs_dict = {}
+        for code, conf in rule_hcpcs + semantic_hcpcs:
+            if code not in hcpcs_dict or conf > hcpcs_dict[code]:
+                hcpcs_dict[code] = conf
+        
+        # Combine and deduplicate ICD-10 codes with confidences
+        icd10_dict = {}
+        for code, conf in rule_icd10 + semantic_icd10:
+            if code not in icd10_dict or conf > icd10_dict[code]:
+                icd10_dict[code] = conf
+        
+        # Filter by confidence threshold and sort
+        hcpcs_filtered = [(code, conf) for code, conf in hcpcs_dict.items() if conf >= 0.3]
+        hcpcs_filtered.sort(key=lambda x: x[1], reverse=True)
+        
+        icd10_filtered = [(code, conf) for code, conf in icd10_dict.items() if conf >= 0.3]
+        icd10_filtered.sort(key=lambda x: x[1], reverse=True)
+        
+        # Extract final results (top 10)
+        hcpcs_codes = [code for code, _ in hcpcs_filtered[:10]]
+        icd10_codes = [code for code, _ in icd10_filtered[:10]]
+        hcpcs_confidences = [conf for _, conf in hcpcs_filtered[:10]]
+        icd10_confidences = [conf for _, conf in icd10_filtered[:10]]
+        
+        # Check if review is needed
+        needs_review, review_reason = self._should_flag_review(icd10_codes, icd10_confidences)
+        
+        return {
+            'hcpcs_codes': hcpcs_codes,
+            'icd10_codes': icd10_codes,
+            'hcpcs_confidences': hcpcs_confidences,
+            'icd10_confidences': icd10_confidences,
+            'needs_review': needs_review,
+            'review_reason': review_reason if needs_review else ""
+        }
 
 
-def process_policies(input_file: str, output_file: str):
-    """Process policies with progress tracking."""
+def process_policies_with_review(input_file: str, output_file: str, review_threshold: float = 0.6):
+    """
+    Process policies with human review flagging.
+    
+    Args:
+        input_file: Input CSV file with policy texts
+        output_file: Output CSV file for results
+        review_threshold: Minimum average confidence to avoid review (default: 0.6)
+    """
     logger.info(f"Loading policies from {input_file}...")
     
     # Load policies
@@ -488,10 +567,12 @@ def process_policies(input_file: str, output_file: str):
     
     # Initialize inference engine
     logger.info("Initializing inference engine...")
-    inference_engine = EfficientCodeInference()
+    inference_engine = EfficientCodeInference(review_threshold=review_threshold)
     
     # Process each policy with progress bar
     results = []
+    flagged_count = 0
+    
     for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing policies"):
         try:
             text = row[text_column]
@@ -500,27 +581,38 @@ def process_policies(input_file: str, output_file: str):
             
             policy_id = row.get('policy_id', idx)
             
-            # Infer codes
-            hcpcs_codes, icd10_codes, confidence_scores = inference_engine.infer_codes(text)
+            # Infer codes with review flagging
+            result = inference_engine.infer_codes_with_review(text)
             
-            # Combine all codes
-            all_codes = hcpcs_codes + icd10_codes
+            if result['needs_review']:
+                flagged_count += 1
             
             # Calculate average confidence
-            avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
+            all_confidences = result['hcpcs_confidences'] + result['icd10_confidences']
+            avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
             
             results.append({
                 'id': policy_id,
-                'codes': all_codes,
-                'confidence': avg_confidence
+                'hcpcs_codes': result['hcpcs_codes'],
+                'icd10_codes': result['icd10_codes'],
+                'hcpcs_confidences': result['hcpcs_confidences'],
+                'icd10_confidences': result['icd10_confidences'],
+                'average_confidence': avg_confidence,
+                'needs_review': result['needs_review'],
+                'review_reason': result['review_reason']
             })
                 
         except Exception as e:
             logger.error(f"Error processing policy {idx}: {e}")
             results.append({
                 'id': row.get('policy_id', idx),
-                'codes': [],
-                'confidence': 0.0
+                'hcpcs_codes': [],
+                'icd10_codes': [],
+                'hcpcs_confidences': [],
+                'icd10_confidences': [],
+                'average_confidence': 0.0,
+                'needs_review': True,
+                'review_reason': f"Error processing: {str(e)}"
             })
     
     # Create output DataFrame
@@ -532,12 +624,13 @@ def process_policies(input_file: str, output_file: str):
     
     # Print summary
     total_policies = len(output_df)
-    policies_with_codes = len(output_df[output_df['codes'].apply(len) > 0])
-    avg_confidence = output_df['confidence'].mean()
+    policies_with_codes = len(output_df[output_df['icd10_codes'].apply(len) > 0])
+    avg_confidence = output_df['average_confidence'].mean()
     
     logger.info(f"\nPipeline Summary:")
     logger.info(f"  Total policies processed: {total_policies}")
-    logger.info(f"  Policies with codes: {policies_with_codes}")
+    logger.info(f"  Policies with ICD-10 codes: {policies_with_codes}")
+    logger.info(f"  Policies flagged for review: {flagged_count} ({flagged_count/total_policies*100:.1f}%)")
     logger.info(f"  Average confidence: {avg_confidence:.3f}")
     
     return output_df
@@ -545,9 +638,11 @@ def process_policies(input_file: str, output_file: str):
 
 def main():
     """Main entrypoint."""
-    parser = argparse.ArgumentParser(description="Efficient ClinicalBERT Medical Code Inference Pipeline")
+    parser = argparse.ArgumentParser(description="ClinicalBERT Medical Code Inference with Human Review Flagging")
     parser.add_argument("-input", required=True, help="Input CSV file with policy texts")
     parser.add_argument("-output", required=True, help="Output CSV file for inferred codes")
+    parser.add_argument("-review-threshold", type=float, default=0.6, 
+                       help="Minimum average ICD-10 confidence to avoid review (default: 0.6)")
     parser.add_argument("-verbose", action="store_true", help="Enable verbose logging")
     
     args = parser.parse_args()
@@ -562,7 +657,11 @@ def main():
     
     try:
         # Process policies
-        results_df = process_policies(args.input, args.output)
+        results_df = process_policies_with_review(
+            args.input, 
+            args.output, 
+            review_threshold=args.review_threshold
+        )
         
         if not results_df.empty:
             logger.info("Pipeline completed successfully!")
@@ -577,3 +676,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+    
