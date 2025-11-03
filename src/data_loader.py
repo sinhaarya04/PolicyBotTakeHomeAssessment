@@ -66,6 +66,7 @@ class DataLoader:
         """
         try:
             # Read the CSV file
+            # To read only first 1000 rows: df = pd.read_csv(filepath, nrows=1000)
             df = pd.read_csv(filepath)
             
             # Handle different column name formats
@@ -89,6 +90,8 @@ class DataLoader:
     def load_icd10_codes(self, filepath: str) -> Dict[str, str]:
         """Load ICD-10 codes from CSV file."""
         try:
+            # Read the CSV file
+            # To read only first 1000 rows: df = pd.read_csv(filepath, nrows=1000)
             df = pd.read_csv(filepath)
             # Handle different column name formats
             code_col = 'code' if 'code' in df.columns else 'Codes'
